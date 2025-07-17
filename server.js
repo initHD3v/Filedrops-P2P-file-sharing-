@@ -49,16 +49,34 @@ app.use(express.json());
 
 const clients = {};
 
-// Function to generate a random nickname (1-8 lowercase letters)
-function generateRandomNickname() {
-  const length = Math.floor(Math.random() * 8) + 1; // 1 to 8 characters
-  let result = '';
-  const characters = 'abcdefghijklmnopqrstuvwxyz';
-  const charactersLength = characters.length;
-  for (let i = 0; i < length; i++) {
-    result += characters.charAt(Math.floor(Math.random() * charactersLength));
+// Daftar nama hewan dan buah untuk penamaan unik
+const animals = [
+  'singa', 'gajah', 'kucing', 'anjing', 'zebra', 'monyet', 'harimau', 'kelinci', 'serigala', 'beruang'
+];
+
+const fruits = [
+  'pisang', 'mangga', 'jeruk', 'nanas', 'anggur', 'alpukat', 'rambutan', 'durian', 'salak', 'apel'
+];
+
+// Fungsi untuk menghasilkan nama perangkat unik (hewan + buah, 10-12 karakter)
+function generateUniqueDeviceName() {
+  let newName;
+  let isUnique = false;
+  const minLength = 10;
+  const maxLength = 12;
+
+  while (!isUnique) {
+    const randomAnimal = animals[Math.floor(Math.random() * animals.length)];
+    const randomFruit = fruits[Math.floor(Math.random() * fruits.length)];
+    newName = randomAnimal + randomFruit;
+
+    // Periksa panjang nama
+    if (newName.length >= minLength && newName.length <= maxLength) {
+      // Periksa keunikan di antara klien yang sudah ada
+      isUnique = !Object.values(clients).some(client => client.nickname === newName);
+    }
   }
-  return result;
+  return newName;
 }
 
 const broadcastUsers = () => {
@@ -82,7 +100,7 @@ const broadcastUsers = () => {
 
 wss.on('connection', (ws, req) => {
   const clientId = uuidv4();
-  const randomNickname = generateRandomNickname();
+  const randomNickname = generateUniqueDeviceName();
   clients[clientId] = { id: clientId, ws: ws, nickname: randomNickname };
 
   console.log(`Client ${clientId} connected with nickname ${randomNickname}. Total clients: ${Object.keys(clients).length}`);
