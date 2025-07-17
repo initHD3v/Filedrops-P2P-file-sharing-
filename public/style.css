@@ -353,3 +353,19 @@ body::after {
     from, to { border-color: transparent }
     50% { border-color: orange; }
 }
+
+/* Custom Toast Animation */
+.toast.show {
+  animation: slideInLeft 0.5s forwards;
+}
+
+@keyframes slideInLeft {
+  from {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}

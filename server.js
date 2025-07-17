@@ -4,16 +4,14 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const archiver = require('archiver');
-const https = require('https'); // Use https for a secure context
+const helmet = require('helmet');
+const http = require('http');
 const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 // Create an HTTPS server using the generated SSL certificate files
-const server = https.createServer({
-  key: fs.readFileSync('key.pem'),
-  cert: fs.readFileSync('cert.pem')
-}, app);
+const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
@@ -24,13 +22,44 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 }
 
 // Serve static files
-app.use(express.static(path.join(__dirname, '.')));
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+        "script-src": ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
+        "style-src": ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net", "https://fonts.googleapis.com"],
+        "font-src": ["'self'", "https://fonts.gstatic.com"],
+        "connect-src": ["'self'", "ws:", "wss:"], // Allow all WebSocket connections
+        "img-src": ["'self'", "data:"],
+        "frame-src": ["'self'"],
+        "worker-src": ["'self'", "blob:"],
+        "object-src": ["'none'"],
+        // IMPORTANT: Do not upgrade insecure requests during local development
+        "upgrade-insecure-requests": null,
+      },
+    },
+  })
+);
+app.use(express.static(path.join(__dirname, 'public')));
 app.use('/uploads', express.static(UPLOADS_DIR));
 app.use(express.json());
 
 // --- WebSocket Logic for User Discovery ---
 
 const clients = {};
+
+// Function to generate a random nickname (1-8 lowercase letters)
+function generateRandomNickname() {
+  const length = Math.floor(Math.random() * 8) + 1; // 1 to 8 characters
+  let result = '';
+  const characters = 'abcdefghijklmnopqrstuvwxyz';
+  const charactersLength = characters.length;
+  for (let i = 0; i < length; i++) {
+    result += characters.charAt(Math.floor(Math.random() * charactersLength));
+  }
+  return result;
+}
 
 const broadcastUsers = () => {
   // IP address is removed. The server's only job is to broadcast IDs and nicknames.
@@ -42,19 +71,28 @@ const broadcastUsers = () => {
   const message = JSON.stringify({ type: 'users', users });
   wss.clients.forEach(client => {
     if (client.readyState === WebSocket.OPEN) {
-      client.send(message);
+      try {
+        client.send(message);
+      } catch (error) {
+        console.error(`Error broadcasting users to client ${client.id}:`, error);
+      }
     }
   });
 };
 
 wss.on('connection', (ws, req) => {
   const clientId = uuidv4();
-  // We no longer store the IP address. It's unreliable and not needed for WebRTC.
-  clients[clientId] = { id: clientId, ws: ws, nickname: null };
+  const randomNickname = generateRandomNickname();
+  clients[clientId] = { id: clientId, ws: ws, nickname: randomNickname };
 
-  console.log(`Client ${clientId} connected. Total clients: ${Object.keys(clients).length}`);
-  // Send the client its own ID
-  ws.send(JSON.stringify({ type: 'your-id', id: clientId }));
+  console.log(`Client ${clientId} connected with nickname ${randomNickname}. Total clients: ${Object.keys(clients).length}`);
+  // Send the client its own ID and nickname
+  console.log(`Sending to client ${clientId}: type: 'your-id', id: ${clientId}, nickname: ${randomNickname}`);
+  try {
+    ws.send(JSON.stringify({ type: 'your-id', id: clientId, nickname: randomNickname }));
+  } catch (error) {
+    console.error(`Error sending your-id to client ${clientId}:`, error);
+  }
   broadcastUsers();
 
   ws.on('close', () => {
@@ -162,19 +200,21 @@ app.post('/download-selected', (req, res) => {
   archive.finalize();
 });
 
-// Start the server
-const port = 3000;
-server.listen(port, '0.0.0.0', () => {
-  console.log(`Server running on https://localhost:${port}`);
-  // Find and display the local network IP for easy access from mobile devices
-  const interfaces = os.networkInterfaces();
-  Object.keys(interfaces).forEach(devName => {
-    interfaces[devName].forEach(iface => {
-      if (iface.family === 'IPv4' && !iface.internal) {
-        console.log(`Access on your local network: https://${iface.address}:${port}`);
-      }
+// Start the server only if this file is run directly
+if (require.main === module) {
+  const port = process.env.PORT || 3000;
+  server.listen(port, () => {
+    console.log(`Server running on http://localhost:${port}`);
+    // Find and display the local network IP for easy access from mobile devices
+    const interfaces = os.networkInterfaces();
+    Object.keys(interfaces).forEach(devName => {
+      interfaces[devName].forEach(iface => {
+        if (iface.family === 'IPv4' && !iface.internal) {
+          console.log(`Access on your local network: http://${iface.address}:${port}`);
+        }
+      });
     });
   });
-});
+}
 
 module.exports = { app, server }; // Export for testing

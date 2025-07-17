@@ -4,7 +4,7 @@
   "description": "web app to transfer file over wifi network",
   "main": "index.js",
   "scripts": {
-    "test": "jest",
+    "test": "jest server.test.js websocket.test.js",
     "start": "node server.js"
   },
   "author": "initialHDEV",
@@ -12,6 +12,7 @@
   "dependencies": {
     "archiver": "^7.0.1",
     "express": "^4.19.2",
+    "helmet": "^8.1.0",
     "multer": "^1.4.5-lts.1",
     "uuid": "^11.1.0",
     "ws": "^8.18.3"

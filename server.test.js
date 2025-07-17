@@ -15,13 +15,9 @@ const cleanupUploads = () => {
   }
 };
 
-beforeAll(() => {
-  // Clean up before any tests run
-  cleanupUploads();
-});
-
-afterEach(() => {
-  // Clean up after each test
+beforeAll((done) => {
+  // Start the server before any tests run
+  server.listen(3002, done); // Use a different port for testing
   cleanupUploads();
 });
 
@@ -30,17 +26,22 @@ afterAll((done) => {
   server.close(done);
 });
 
+afterEach(() => {
+  // Clean up after each test
+  cleanupUploads();
+});
+
 describe('File Upload and Management API', () => {
   it('should upload a single file', async () => {
     const response = await request(app)
       .post('/upload')
-      .attach('files', Buffer.from('test file content'), 'test.txt');
+      .attach('files', Buffer.from('test file content'), 'test-file-for-upload.txt');
 
     expect(response.status).toBe(200);
     expect(response.body.message).toBe('Files uploaded successfully!');
     expect(response.body.filenames).toHaveLength(1);
     // The filename is now the original name, not a timestamped one
-    expect(fs.existsSync(path.join(UPLOADS_DIR, 'test.txt'))).toBe(true);
+    expect(fs.existsSync(path.join(UPLOADS_DIR, 'test-file-for-upload.txt'))).toBe(true);
   });
 
   it('should list uploaded files', async () => {
