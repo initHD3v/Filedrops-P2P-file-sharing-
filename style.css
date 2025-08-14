@@ -1,6 +1,6 @@
 body {
   font-family: 'Poppins', sans-serif;
-  background: linear-gradient(135deg, #e0f2f7 0%, #c8e6c9 100%);
+  background: #f0f0f0;
   min-height: 100vh;
   display: flex;
   justify-content: center;
@@ -12,28 +12,7 @@ body {
 
 body::before,
 body::after {
-  content: '';
-  position: absolute;
-  border-radius: 50%;
-  opacity: 0.6;
-  filter: blur(80px);
-  z-index: -1;
-}
-
-body::before {
-  width: 300px;
-  height: 300px;
-  background: linear-gradient(45deg, #a7d9f0, #8e2de2);
-  top: -50px;
-  left: -50px;
-}
-
-body::after {
-  width: 400px;
-  height: 400px;
-  background: linear-gradient(135deg, #c8e6c9, #e0f2c7);
-  bottom: -100px;
-  right: -100px;
+  display: none;
 }
 
 .container {
@@ -102,7 +81,7 @@ body::after {
 
 /* User Card Styles - AirDrop-like circles */
 .user-card {
-  position: relative; /* This is the fix */
+  position: relative;
   background: none;
   border: none;
   padding: 0;
@@ -112,7 +91,9 @@ body::after {
   text-align: center;
   transition: transform 0.3s ease;
   cursor: pointer;
-  width: 100px; /* Define a fixed width for each item */
+  flex-basis: 100px; /* Ideal width */
+  flex-shrink: 0; /* Don't shrink below 100px */
+  flex-grow: 0; /* Don't grow beyond 100px */
 }
 
 .user-card:hover {
@@ -492,11 +473,7 @@ input:checked + .slider:after {
 }
 
 [data-theme='dark'] body {
-  background: linear-gradient(
-    135deg,
-    var(--body-bg-start) 0%,
-    var(--body-bg-end) 100%
-  );
+  background: #333333;
   color: var(--text-color);
 }
 
@@ -607,4 +584,40 @@ input:checked + .slider:after {
 
 .status-dot.red {
   background-color: #dc3545; /* Bootstrap danger red */
+}
+
+.toast-center-top {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: fit-content;
+  max-width: 80%;
+}
+
+.custom-toast {
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 12px 15px;
+}
+
+.toast-icon {
+  font-size: 24px;
+  margin-right: 0; /* Remove margin as text is gone */
+}
+
+/* Custom Toast Animation */
+.toast.show {
+  animation: slideInTop 0.5s forwards;
+}
+
+@keyframes slideInTop {
+  from {
+    transform: translate(-50%, -100%);
+    opacity: 0;
+  }
+  to {
+    transform: translate(-50%, 0);
+    opacity: 1;
+  }
 }

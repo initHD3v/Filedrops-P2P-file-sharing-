@@ -70,23 +70,21 @@ function render() {
           break;
       }
 
-      const userCard = document.createElement('div');
-      userCard.className = 'col-md-4';
-      userCard.innerHTML = `
-        <div class="${cardClass}">
+      const userCardElement = document.createElement('div');
+      userCardElement.className = `${cardClass}`;
+      userCardElement.innerHTML = `
           <span class="status-dot ${dotClass}"></span>
           <i class="material-icons user-icon">person</i>
           <p class="user-nickname mt-2">${user.nickname}</p>
-        </div>
       `;
 
       if (connectionState === 'connected') {
-        userCard.querySelector('.user-card').addEventListener('click', () => {
+        userCardElement.addEventListener('click', () => {
           elements['file-input'].setAttribute('data-target-id', user.id);
           elements['file-input'].click();
         });
       }
-      elements['user-list'].appendChild(userCard);
+      elements['user-list'].appendChild(userCardElement);
     });
   }
 
@@ -123,13 +121,29 @@ function render() {
 
   // Render Toast Notifications
   if (state.toast.isShown) {
+    let iconName;
+    let bgColorClass;
+    switch (state.toast.type) {
+      case 'success':
+        iconName = 'check_circle';
+        bgColorClass = 'bg-success';
+        break;
+      case 'error':
+        iconName = 'error';
+        bgColorClass = 'bg-danger';
+        break;
+      case 'info':
+      default:
+        iconName = 'info';
+        bgColorClass = 'bg-primary';
+        break;
+    }
+
     const toastHTML = `
-      <div class="toast align-items-center text-white bg-${state.toast.type === 'error' ? 'danger' : 'primary'} border-0 show" role="alert" aria-live="assertive" aria-atomic="true">
-        <div class="d-flex">
-          <div class="toast-body">
-            ${state.toast.message}
-          </div>
-          <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+      <div class="toast custom-toast align-items-center text-white ${bgColorClass} border-0 show" role="alert" aria-live="assertive" aria-atomic="true">
+        <div class="d-flex align-items-center">
+          <i class="material-icons toast-icon">${iconName}</i>
+          <button type="button" class="btn-close btn-close-white ms-auto" data-bs-dismiss="toast" aria-label="Close"></button>
         </div>
       </div>
     `;
