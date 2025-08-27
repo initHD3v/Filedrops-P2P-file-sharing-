@@ -4,7 +4,7 @@ import {
   addPeerConnection,
   getPeerConnection,
   addFileChannel,
-  getFileChannels, // Updated import
+  getFileChannels,
   cleanupConnections,
   setTransferState,
   resetTransferState,
@@ -24,6 +24,7 @@ const ICE_SERVERS = {
 };
 
 let fileDownloads = {};
+let fileSenderWorker = null;
 
 function formatEta(seconds) {
   if (seconds === Infinity || isNaN(seconds) || seconds < 0) {
@@ -44,11 +45,7 @@ async function createPeerConnection(targetId, isInitiator) {
 
   peerConnection.onicecandidate = (event) => {
     if (event.candidate) {
-      sendMessage({
-        type: 'ice-candidate',
-        targetId,
-        candidate: event.candidate,
-      });
+      sendMessage({ type: 'ice-candidate', targetId, candidate: event.candidate });
     }
   };
 
@@ -63,17 +60,12 @@ async function createPeerConnection(targetId, isInitiator) {
     const newState = peerConnection.connectionState;
     console.log(`Peer connection with ${targetId} changed to ${newState}`);
     setPeerConnectionState(targetId, newState);
-    if (
-      newState === 'disconnected' ||
-      newState === 'failed' ||
-      newState === 'closed'
-    ) {
+    if (newState === 'disconnected' || newState === 'failed' || newState === 'closed') {
       cleanupConnections(targetId);
     }
   };
 
   if (isInitiator) {
-    // Create multiple data channels for parallel transfer
     for (let i = 0; i < PARALLEL_CHANNELS; i++) {
       const label = `file-transfer-${i}`;
       const channel = peerConnection.createDataChannel(label, { ordered: true });
@@ -94,19 +86,13 @@ async function createPeerConnection(targetId, isInitiator) {
 
 function setupDataChannel(channel, userId) {
   channel.binaryType = 'arraybuffer';
-  // The receiver's message handler is the same for all channels
   channel.onmessage = (event) => handleDataChannelMessage(event, userId);
   channel.onopen = () => console.log(`Data channel '${channel.label}' with ${userId} is open`);
-  channel.onclose = () => {
-    console.log(`Data channel '${channel.label}' with ${userId} is closed`);
-    // Don't cleanup connections here, as other channels might still be open
-  };
+  channel.onclose = () => console.log(`Data channel '${channel.label}' with ${userId} is closed`);
 }
 
-// NOTE: This simplified receiver does not handle out-of-order chunks.
-// It relies on the network delivering chunks from different channels in a roughly sequential manner.
-// For a more robust solution, chunk reordering would be necessary.
 async function handleDataChannelMessage(event, userId) {
+  // ... (Receiver logic remains unchanged)
   const data = event.data;
 
   if (data instanceof ArrayBuffer) {
@@ -208,25 +194,110 @@ async function handleDataChannelMessage(event, userId) {
   }
 }
 
+// --- New sendFile implementation using Web Worker ---
 async function sendFile(targetId, files) {
   const file = files[0];
   const channels = getFileChannels(targetId);
 
-  if (!channels || channels.length < PARALLEL_CHANNELS) {
+  if (!channels || channels.length < PARALLEL_CHANNELS || !channels.every(ch => ch.readyState === 'open')) {
     showToast('Connection not fully established. Please wait.', 'error');
     return;
   }
 
-  const allChannelsOpen = channels.every(ch => ch.readyState === 'open');
-  if (!allChannelsOpen) {
-    showToast('Some channels are not ready. Please wait.', 'error');
-    return;
+  if (fileSenderWorker) {
+    console.log('A transfer is already in progress. Terminating previous worker.');
+    fileSenderWorker.terminate();
   }
 
-  channels.forEach(ch => { ch.bufferedAmountLowThreshold = LOW_WATER_MARK; });
+  fileSenderWorker = new Worker('./file.worker.js', { type: 'module' });
+  console.log('File sender worker created.');
 
+  let offset = 0;
+  let chunkCounter = 0;
+
+  fileSenderWorker.onmessage = async (e) => {
+    const { type, chunk } = e.data;
+
+    if (type === 'chunk') {
+      const channelIndex = chunkCounter % PARALLEL_CHANNELS;
+      const channel = channels[channelIndex];
+
+      if (channel.bufferedAmount > HIGH_WATER_MARK) {
+        await new Promise(resolve => {
+          channel.onbufferedamountlow = () => {
+            channel.onbufferedamountlow = null;
+            resolve();
+          };
+        });
+      }
+
+      if (!getState().isTransferring) {
+        return; // Transfer was cancelled
+      }
+      
+      if (channel.readyState !== 'open') {
+        console.error(`Data channel '${channel.label}' is not open. Aborting.`);
+        showToast('Connection unstable, transfer aborted.', 'error');
+        resetTransferState();
+        if (fileSenderWorker) fileSenderWorker.terminate();
+        fileSenderWorker = null;
+        return;
+      }
+
+      try {
+        channel.send(chunk);
+        offset += chunk.byteLength;
+        chunkCounter++;
+
+        const progress = Math.round((offset / file.size) * 100);
+        const timeElapsed = (Date.now() - getState().transferStartTime) / 1000;
+        const speedBps = offset / timeElapsed;
+        const bytesRemaining = file.size - offset;
+        const etaSeconds = bytesRemaining / speedBps;
+
+        setTransferState({
+          transferProgress: progress,
+          transferStatus: `Sending... ${progress}%`,
+          transferEta: formatEta(etaSeconds),
+        });
+      } catch (error) {
+        console.error('Error sending file chunk:', error);
+        setTransferState({ transferStatus: `Error: ${error.message}`, isTransferring: false });
+        if (fileSenderWorker) fileSenderWorker.terminate();
+        fileSenderWorker = null;
+      }
+
+    } else if (type === 'done') {
+      console.log('Worker finished processing file.');
+      setTransferState({
+        transferStatus: `File ${file.name} sent successfully!`,
+        isTransferring: false,
+      });
+      showToast('File sent!', 'success');
+      if (fileSenderWorker) fileSenderWorker.terminate();
+      fileSenderWorker = null;
+
+    } else if (type === 'error') {
+      console.error('Received error from worker:', e.data.message);
+      showToast(`Error during file processing: ${e.data.message}`, 'error');
+      resetTransferState();
+      if (fileSenderWorker) fileSenderWorker.terminate();
+      fileSenderWorker = null;
+    }
+  };
+
+  fileSenderWorker.onerror = (err) => {
+    console.error('Unhandled error in file sender worker:', err);
+    showToast(`A critical worker error occurred: ${err.message}`, 'error');
+    resetTransferState();
+    if (fileSenderWorker) fileSenderWorker.terminate();
+    fileSenderWorker = null;
+  };
+
+  // Setup state and send initial metadata
+  channels.forEach(ch => { ch.bufferedAmountLowThreshold = LOW_WATER_MARK; });
   const metadata = { name: file.name, size: file.size, type: 'file-metadata' };
-  channels[0].send(JSON.stringify(metadata)); // Send metadata on the first channel
+  channels[0].send(JSON.stringify(metadata));
 
   setTransferState({
     isTransferring: true,
@@ -235,76 +306,19 @@ async function sendFile(targetId, files) {
     transferStartTime: Date.now(),
     transferEta: '...',
     cancelTransfer: () => {
-      console.log('Transfer cancelled');
+      console.log('Transfer cancelled by user.');
+      if (fileSenderWorker) {
+        fileSenderWorker.terminate();
+        fileSenderWorker = null;
+      }
       resetTransferState();
       setTransferState({ transferStatus: 'Transfer cancelled.' });
       showToast('Transfer cancelled', 'error');
     },
   });
 
-  let offset = 0;
-  let chunkCounter = 0;
-
-  function readSlice(o) {
-    return new Promise((resolve, reject) => {
-      const slice = file.slice(o, o + CHUNK_SIZE);
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsArrayBuffer(slice);
-    });
-  }
-
-  while (offset < file.size) {
-    const channelIndex = chunkCounter % PARALLEL_CHANNELS;
-    const channel = channels[channelIndex];
-
-    if (channel.bufferedAmount > HIGH_WATER_MARK) {
-      await new Promise(resolve => {
-        channel.onbufferedamountlow = () => {
-          channel.onbufferedamountlow = null;
-          resolve();
-        };
-      });
-    }
-
-    try {
-      if (!getState().isTransferring) {
-        console.log('Transfer cancelled by user.');
-        break;
-      }
-
-      const chunk = await readSlice(offset);
-      channel.send(chunk);
-      offset += chunk.byteLength;
-      chunkCounter++;
-
-      const progress = Math.round((offset / file.size) * 100);
-      const timeElapsed = (Date.now() - getState().transferStartTime) / 1000;
-      const speedBps = offset / timeElapsed;
-      const bytesRemaining = file.size - offset;
-      const etaSeconds = bytesRemaining / speedBps;
-
-      setTransferState({
-        transferProgress: progress,
-        transferStatus: `Sending... ${progress}%`,
-        transferEta: formatEta(etaSeconds),
-      });
-
-    } catch (error) {
-      console.error('Error reading or sending file chunk:', error);
-      setTransferState({ transferStatus: `Error: ${error.message}`, isTransferring: false });
-      break;
-    }
-  }
-
-  if (offset >= file.size) {
-    setTransferState({
-      transferStatus: `File ${file.name} sent successfully!`,
-      isTransferring: false,
-    });
-    showToast('File sent!', 'success');
-  }
+  // Kick off the worker
+  fileSenderWorker.postMessage({ type: 'start', file });
 }
 
 async function handleOffer(senderId, offer) {
