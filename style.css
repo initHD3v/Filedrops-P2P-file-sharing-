@@ -521,6 +521,10 @@ input:checked + .slider:after {
   border-color: var(--drop-area-highlight-border);
 }
 
+[data-theme='dark'] #transfer-eta {
+  color: var(--app-subtitle-color);
+}
+
 [data-theme='dark'] .user-icon-wrapper {
   background: linear-gradient(
     45deg,

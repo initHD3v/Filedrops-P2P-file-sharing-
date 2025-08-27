@@ -14,6 +14,8 @@ const state = {
   transferProgress: 0,
   isTransferring: false,
   cancelTransfer: () => {},
+  transferEta: '', // Estimated time of arrival
+  transferStartTime: null,
 
   // UI component state
   incomingFileModal: {
@@ -81,6 +83,8 @@ export function setTransferState(updates) {
 export function resetTransferState() {
   state.isTransferring = false;
   state.transferProgress = 0;
+  state.transferEta = '';
+  state.transferStartTime = null;
   // We keep the status message until the next transfer
   notify();
 }
@@ -146,25 +150,31 @@ export function removePeerConnection(userId) {
 }
 
 export function addFileChannel(userId, channel) {
-  state.fileChannels[userId] = channel;
+  if (!state.fileChannels[userId]) {
+    state.fileChannels[userId] = [];
+  }
+  state.fileChannels[userId].push(channel);
 }
 
-export function getFileChannel(userId) {
-  return state.fileChannels[userId];
+export function getFileChannels(userId) {
+  return state.fileChannels[userId] || [];
 }
 
-export function removeFileChannel(userId) {
-  if (state.fileChannels[userId]) {
-    try {
-      state.fileChannels[userId].close();
-    } catch (e) {
-      console.error('Error closing file channel:', e);
-    }
+export function cleanupFileChannels(userId) {
+  const channels = state.fileChannels[userId];
+  if (channels && channels.length) {
+    channels.forEach(channel => {
+      try {
+        channel.close();
+      } catch (e) {
+        console.error('Error closing file channel:', e);
+      }
+    });
     delete state.fileChannels[userId];
   }
 }
 
 export function cleanupConnections(userId) {
   removePeerConnection(userId);
-  removeFileChannel(userId);
+  cleanupFileChannels(userId);
 }

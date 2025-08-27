@@ -1,9 +1,15 @@
-# FileDrop - Transfer File P2P
+# FileDrop - Transfer File P2P Berkinerja Tinggi
 
-Aplikasi web yang sederhana, cepat, dan aman untuk mentransfer file secara langsung antar perangkat di jaringan lokal yang sama. Aplikasi ini menggunakan WebRTC untuk komunikasi peer-to-peer, menghilangkan kebutuhan untuk mengunggah file ke server pusat.
+Aplikasi web yang sederhana, cepat, dan aman untuk mentransfer file secara langsung antar perangkat di jaringan lokal yang sama. Dioptimalkan untuk file berukuran sangat besar (multi-gigabyte) menggunakan teknologi web modern.
 
-## Fitur
+Aplikasi ini menggunakan WebRTC untuk komunikasi peer-to-peer, menghilangkan kebutuhan untuk mengunggah file ke server pusat.
 
+## Fitur Unggulan
+
+- **Dukungan File Sangat Besar**: Mentransfer file berukuran multi-gigabyte dengan mudah berkat streaming langsung ke disk menggunakan File System Access API, mencegah crash pada browser.
+- **Transfer Multi-Channel Paralel**: Memanfaatkan hingga 4 "pipa" data secara bersamaan untuk meningkatkan throughput dan memaksimalkan kecepatan transfer.
+- **Kontrol Aliran Dinamis**: Kecepatan transfer dioptimalkan secara real-time dengan mekanisme *backpressure* cerdas untuk mencegah kemacetan jaringan.
+- **Statistik Real-time**: Pantau kemajuan transfer dengan progress bar dan estimasi waktu selesai (ETA) yang akurat.
 - **Transfer Tanpa Server**: File dikirim langsung antar pengguna (P2P) untuk kecepatan dan privasi maksimal.
 - **Penemuan Perangkat**: Secara otomatis menemukan perangkat lain di jaringan yang sama.
 - **Aman**: Komunikasi dienkripsi menggunakan keamanan bawaan WebRTC (DTLS-SRTP).
@@ -17,7 +23,7 @@ FileDrop menggunakan arsitektur hibrida:
 1.  **Server Sinyal (Node.js/Express/WebSocket)**: Server ringan digunakan untuk "jabat tangan" awal. Tugas satu-satunya adalah mengumumkan ketika pengguna bergabung atau meninggalkan jaringan dan untuk meneruskan pesan sinyal (*offers*, *answers*, *ICE candidates*) antar peer sehingga mereka dapat membuat koneksi langsung.
 
 2.  **Klien (HTML/CSS/JS)**: Frontend menangani semua pekerjaan berat.
-    -   **WebRTC**: Membuat `RTCDataChannel` peer-to-peer langsung ke klien lain untuk mentransfer data file.
+    -   **WebRTC**: Membuat beberapa `RTCDataChannel` secara paralel untuk transfer data file berkecepatan tinggi.
     -   **Vite**: Digunakan sebagai alat build modern untuk pengalaman pengembangan yang cepat dan build produksi yang dioptimalkan.
     -   **Manajemen State Terpusat**: Model pub/sub sederhana di `state.js` memastikan aliran data yang dapat diprediksi dan dapat dipelihara.
 

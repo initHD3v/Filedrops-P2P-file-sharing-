@@ -4,7 +4,7 @@ import {
   addPeerConnection,
   getPeerConnection,
   addFileChannel,
-  getFileChannel,
+  getFileChannels, // Updated import
   cleanupConnections,
   setTransferState,
   resetTransferState,
@@ -12,7 +12,10 @@ import {
   setPeerConnectionState,
 } from './state.js';
 
-const CHUNK_SIZE = 64 * 1024; // 64KB
+const PARALLEL_CHANNELS = 4;
+const CHUNK_SIZE = 256 * 1024; // 256KB
+const HIGH_WATER_MARK = 16 * 1024 * 1024; // 16MB
+const LOW_WATER_MARK = 8 * 1024 * 1024; // 8MB
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -20,9 +23,20 @@ const ICE_SERVERS = {
   ],
 };
 
-let receivedBuffers = {};
-let receivedMetadata = {};
 let fileDownloads = {};
+
+function formatEta(seconds) {
+  if (seconds === Infinity || isNaN(seconds) || seconds < 0) {
+    return '...';
+  }
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0) return `${h}h ${m}m left`;
+  if (m > 0) return `${m}m ${s}s left`;
+  if (s > 0) return `${s}s left`;
+  return '...';
+}
 
 async function createPeerConnection(targetId, isInitiator) {
   const peerConnection = new RTCPeerConnection(ICE_SERVERS);
@@ -39,7 +53,7 @@ async function createPeerConnection(targetId, isInitiator) {
   };
 
   peerConnection.ondatachannel = (event) => {
-    console.log('Data channel received');
+    console.log(`Data channel '${event.channel.label}' received`);
     const channel = event.channel;
     addFileChannel(targetId, channel);
     setupDataChannel(channel, targetId);
@@ -59,9 +73,14 @@ async function createPeerConnection(targetId, isInitiator) {
   };
 
   if (isInitiator) {
-    const channel = peerConnection.createDataChannel('file-transfer');
-    addFileChannel(targetId, channel);
-    setupDataChannel(channel, targetId);
+    // Create multiple data channels for parallel transfer
+    for (let i = 0; i < PARALLEL_CHANNELS; i++) {
+      const label = `file-transfer-${i}`;
+      const channel = peerConnection.createDataChannel(label, { ordered: true });
+      console.log(`Creating data channel: ${label}`);
+      addFileChannel(targetId, channel);
+      setupDataChannel(channel, targetId);
+    }
 
     try {
       const offer = await peerConnection.createOffer();
@@ -75,138 +94,217 @@ async function createPeerConnection(targetId, isInitiator) {
 
 function setupDataChannel(channel, userId) {
   channel.binaryType = 'arraybuffer';
+  // The receiver's message handler is the same for all channels
   channel.onmessage = (event) => handleDataChannelMessage(event, userId);
-  channel.onopen = () => console.log(`Data channel with ${userId} is open`);
+  channel.onopen = () => console.log(`Data channel '${channel.label}' with ${userId} is open`);
   channel.onclose = () => {
-    console.log(`Data channel with ${userId} is closed`);
-    cleanupConnections(userId);
+    console.log(`Data channel '${channel.label}' with ${userId} is closed`);
+    // Don't cleanup connections here, as other channels might still be open
   };
 }
 
-function handleDataChannelMessage(event, userId) {
+// NOTE: This simplified receiver does not handle out-of-order chunks.
+// It relies on the network delivering chunks from different channels in a roughly sequential manner.
+// For a more robust solution, chunk reordering would be necessary.
+async function handleDataChannelMessage(event, userId) {
   const data = event.data;
+
+  if (data instanceof ArrayBuffer) {
+    const download = fileDownloads[userId];
+    if (!download) {
+      console.error('Received file chunk before metadata.');
+      return;
+    }
+
+    if (download.writable) {
+      try {
+        await download.writable.write(data);
+      } catch (err) {
+        console.error('Error writing file chunk:', err);
+        setTransferState({ transferStatus: `Error: ${err.message}`, isTransferring: false });
+        delete fileDownloads[userId];
+        return;
+      }
+    } else {
+      download.bufferedChunks.push(data);
+    }
+
+    download.receivedSize += data.byteLength;
+    const progress = Math.round((download.receivedSize / download.metadata.size) * 100);
+    const timeElapsed = (Date.now() - getState().transferStartTime) / 1000;
+    const speedBps = download.receivedSize / timeElapsed;
+    const bytesRemaining = download.metadata.size - download.receivedSize;
+    const etaSeconds = bytesRemaining / speedBps;
+
+    setTransferState({
+      transferProgress: progress,
+      transferStatus: `Downloading... ${progress}%`,
+      transferEta: formatEta(etaSeconds),
+    });
+
+    if (download.receivedSize === download.metadata.size) {
+      if (download.writable) {
+        await download.writable.close();
+      }
+      setTransferState({
+        transferStatus: `File ${download.metadata.name} received successfully!`,
+        isTransferring: false,
+      });
+      showToast('File received and saved!', 'success');
+      delete fileDownloads[userId];
+    }
+    return;
+  }
+
   try {
-    // Assuming metadata is sent as a JSON string
     const metadata = JSON.parse(data);
     if (metadata.type === 'file-metadata') {
-      receivedMetadata[userId] = metadata;
-      receivedBuffers[userId] = [];
-      fileDownloads[userId] = { receivedSize: 0 };
       console.log(`Receiving file: ${metadata.name} (${metadata.size} bytes)`);
+
+      fileDownloads[userId] = { metadata, receivedSize: 0, writable: null, bufferedChunks: [] };
+
       setTransferState({
         isTransferring: true,
         transferStatus: `Incoming file: ${metadata.name}`,
         transferProgress: 0,
+        transferStartTime: Date.now(),
+        transferEta: '...',
       });
-      return;
+
+      if (!window.showSaveFilePicker) {
+        showToast('Browser not supported for large file saves.', 'error');
+        return;
+      }
+
+      try {
+        const handle = await window.showSaveFilePicker({ suggestedName: metadata.name });
+        const writable = await handle.createWritable();
+        const download = fileDownloads[userId];
+        download.writable = writable;
+
+        for (const chunk of download.bufferedChunks) {
+          await writable.write(chunk);
+        }
+        download.bufferedChunks = [];
+
+        if (download.receivedSize === download.metadata.size) {
+          await writable.close();
+          setTransferState({
+            transferStatus: `File ${download.metadata.name} received successfully!`,
+            isTransferring: false,
+          });
+          showToast('File received and saved!', 'success');
+          delete fileDownloads[userId];
+        }
+      } catch (err) {
+        console.log('File save cancelled by user.', err);
+        resetTransferState();
+        setTransferState({ transferStatus: 'File save cancelled.' });
+        delete fileDownloads[userId];
+      }
     }
   } catch (e) {
-    // It's not metadata, so it must be a file chunk
-    const metadata = receivedMetadata[userId];
-    if (!metadata) {
-      console.error('Received file chunk without metadata.');
-      return;
-    }
-
-    receivedBuffers[userId].push(data);
-    fileDownloads[userId].receivedSize += data.byteLength;
-
-    const progress = Math.round(
-      (fileDownloads[userId].receivedSize / metadata.size) * 100
-    );
-    setTransferState({
-      transferProgress: progress,
-      transferStatus: `Downloading... ${progress}%`,
-    });
-
-    if (fileDownloads[userId].receivedSize === metadata.size) {
-      const receivedBlob = new Blob(receivedBuffers[userId]);
-      const downloadUrl = URL.createObjectURL(receivedBlob);
-      const a = document.createElement('a');
-      a.href = downloadUrl;
-      a.download = metadata.name;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(downloadUrl);
-
-      setTransferState({
-        transferStatus: `File ${metadata.name} received successfully!`,
-        isTransferring: false,
-      });
-      showToast('File received!', 'success');
-      delete receivedMetadata[userId];
-      delete receivedBuffers[userId];
-      delete fileDownloads[userId];
-    }
+    console.error('Failed to parse message or handle chunk.', e);
   }
 }
 
 async function sendFile(targetId, files) {
-  const file = files[0]; // For now, send one file at a time
-  const channel = getFileChannel(targetId);
+  const file = files[0];
+  const channels = getFileChannels(targetId);
 
-  if (!channel || channel.readyState !== 'open') {
-    showToast('Connection not ready. Please wait.', 'error');
+  if (!channels || channels.length < PARALLEL_CHANNELS) {
+    showToast('Connection not fully established. Please wait.', 'error');
     return;
   }
 
+  const allChannelsOpen = channels.every(ch => ch.readyState === 'open');
+  if (!allChannelsOpen) {
+    showToast('Some channels are not ready. Please wait.', 'error');
+    return;
+  }
+
+  channels.forEach(ch => { ch.bufferedAmountLowThreshold = LOW_WATER_MARK; });
+
   const metadata = { name: file.name, size: file.size, type: 'file-metadata' };
-  channel.send(JSON.stringify(metadata));
+  channels[0].send(JSON.stringify(metadata)); // Send metadata on the first channel
 
   setTransferState({
     isTransferring: true,
     transferStatus: `Sending: ${file.name}`,
     transferProgress: 0,
+    transferStartTime: Date.now(),
+    transferEta: '...',
     cancelTransfer: () => {
-      // This is a simplified cancel. A real implementation would need a signal.
       console.log('Transfer cancelled');
       resetTransferState();
       setTransferState({ transferStatus: 'Transfer cancelled.' });
       showToast('Transfer cancelled', 'error');
-      // We can't easily stop the stream, but we can stop sending more chunks.
-      // For a real implementation, a 'cancel' message should be sent.
     },
   });
 
   let offset = 0;
-  const fileReader = new FileReader();
+  let chunkCounter = 0;
 
-  fileReader.onload = (e) => {
-    if (!getState().isTransferring) return; // Check if transfer was cancelled
+  function readSlice(o) {
+    return new Promise((resolve, reject) => {
+      const slice = file.slice(o, o + CHUNK_SIZE);
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsArrayBuffer(slice);
+    });
+  }
+
+  while (offset < file.size) {
+    const channelIndex = chunkCounter % PARALLEL_CHANNELS;
+    const channel = channels[channelIndex];
+
+    if (channel.bufferedAmount > HIGH_WATER_MARK) {
+      await new Promise(resolve => {
+        channel.onbufferedamountlow = () => {
+          channel.onbufferedamountlow = null;
+          resolve();
+        };
+      });
+    }
+
     try {
-      channel.send(e.target.result);
-      offset += e.target.result.byteLength;
+      if (!getState().isTransferring) {
+        console.log('Transfer cancelled by user.');
+        break;
+      }
+
+      const chunk = await readSlice(offset);
+      channel.send(chunk);
+      offset += chunk.byteLength;
+      chunkCounter++;
+
       const progress = Math.round((offset / file.size) * 100);
+      const timeElapsed = (Date.now() - getState().transferStartTime) / 1000;
+      const speedBps = offset / timeElapsed;
+      const bytesRemaining = file.size - offset;
+      const etaSeconds = bytesRemaining / speedBps;
+
       setTransferState({
         transferProgress: progress,
         transferStatus: `Sending... ${progress}%`,
+        transferEta: formatEta(etaSeconds),
       });
 
-      if (offset < file.size) {
-        readSlice(offset);
-      } else {
-        setTransferState({
-          transferStatus: `File ${file.name} sent successfully!`,
-          isTransferring: false,
-        });
-        showToast('File sent!', 'success');
-      }
     } catch (error) {
-      console.error('Error sending file chunk:', error);
-      setTransferState({
-        transferStatus: `Error: ${error.message}`,
-        isTransferring: false,
-      });
+      console.error('Error reading or sending file chunk:', error);
+      setTransferState({ transferStatus: `Error: ${error.message}`, isTransferring: false });
+      break;
     }
-  };
+  }
 
-  const readSlice = (o) => {
-    const slice = file.slice(o, o + CHUNK_SIZE);
-    fileReader.readAsArrayBuffer(slice);
-  };
-
-  readSlice(0);
+  if (offset >= file.size) {
+    setTransferState({
+      transferStatus: `File ${file.name} sent successfully!`,
+      isTransferring: false,
+    });
+    showToast('File sent!', 'success');
+  }
 }
 
 async function handleOffer(senderId, offer) {

@@ -38,11 +38,13 @@ app.use(
 
 app.use(express.json());
 
-// In a Vite setup, the Vite dev server handles serving static files.
-// For production, you would serve the 'dist' folder.
-// This catch-all route is useful if you use client-side routing.
+// Server Node.js ini hanya berfungsi sebagai server sinyal WebSocket dalam mode pengembangan.
+// File statis dilayani oleh server pengembangan Vite.
+
+//Melayani file statis dari folder dist
+app.use(express.static(path.join(__dirname, 'dist')));
 app.get('/*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
 // Start the server only if this file is run directly

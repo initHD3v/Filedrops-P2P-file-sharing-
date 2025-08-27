@@ -13,6 +13,7 @@ function cacheElements() {
     'transfer-progress-container',
     'transfer-progress-bar',
     'transfer-status',
+    'transfer-eta',
     'cancel-transfer-button',
     'file-input',
     'file-notification-modal',
@@ -97,12 +98,14 @@ function render() {
     elements['transfer-progress-bar'].textContent =
       `${state.transferProgress}%`;
     elements['transfer-status'].textContent = state.transferStatus;
+    elements['transfer-eta'].textContent = state.transferEta;
     elements['cancel-transfer-button'].style.display = 'block';
   } else {
     transferContainer.style.display = 'none';
     elements['cancel-transfer-button'].style.display = 'none';
     // Do not clear status here, let it persist until next transfer
     elements['transfer-status'].textContent = state.transferStatus;
+    elements['transfer-eta'].textContent = ''; // Clear ETA
   }
 
   // Render Incoming File Modal

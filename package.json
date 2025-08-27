@@ -4,7 +4,6 @@
   "description": "web app to transfer file over wifi network",
   "main": "index.js",
   "scripts": {
-    "dev": "vite",
     "build": "vite build",
     "dev": "concurrently \"vite --host\" \"node server.js\"",
     "start": "node server.js",
